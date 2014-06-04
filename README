@@ -1,0 +1,12 @@
+This is a mirror of http://www.vim.org/scripts/script.php?script_id=4955
+
+GitHub repository: https://github.com/idanarye/vim-merginal
+
+Merginal aims provide a nice inteface for dealing with Git branches. It offers interactive TUI for:
+
+* Viewing the list of branches
+* Checking out branches from that list
+* Creating new branches
+* Deleting branches
+* Merging branches
+* Solving merge conflicts
