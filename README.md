@@ -1,69 +1,91 @@
 INTRODUCTION
 ============
 
-Screencast - https://vimeo.com/95775461
+Merginal aims provide a nice inteface for dealing with Git branches.  It
+offers interactive TUI for:
 
-Vebugger is yet another debugger frontend plugin for Vim, created because I
-wasn't happy with the other debugger plugins I found. Vebugger currently
-supports:
+ * Viewing the list of branches
+ * Checking out branches from that list
+ * Creating new branches
+ * Deleting branches
+ * Merging branches
+ * Solving merge conflicts
+ * Interacting with remotes(pulling, pushing, fetching, tracking)
+ * Diffing against other branches
 
- * Tracking the currently executed command in the source code
- * Debugger flow commands - step-in, set-over, set-out and continue
- * Breakpoints management
- * Evaluating expressions in the current executed scope
- * Messing with the program's state(changing values, calling functions)
-
-Vebugger is built as a generic framework for building frontends for
-interactive shell debugger, and comes with implementations for:
-
- * GDB - doesn't need introdcution...
- * JDB - a Java debugger
- * Mdbg - a .NET debugger(Windows only)
- * PDB - a Python module for debugging Python scripts
- * RDebug - a Ruby command line option for debugging Ruby scripts
-
-Other implementations can be added with ease, and I will accept pull requests
-that add such implementations as long as they use Vim's |license|.
-
-Vebugger is built under the following assumptions:
-
- * While command line debuggers share enough in common to make the creation
-   of such a framework as Vebugger possible, the differences between them are
-   too great to be expressed with regular expression. To support them all at
-   least some code has to be written.
- * Unlike IDE users, Vim users tend to understand the tools the operate behind
-   the scenes. While Vebugger automates the common features, it allows you to
-   "open the hood" and interact with the debugger's shell directly so you could
-   utilize the full power of your debugger.
- * I have no intention to aim for the lowest common denominator. If one
-   debugger has a cool feature I want to support, I'll implement it even if the
-   other debuggers don't have it.
-
-Vebugger is developed under Linux. It doesn't work properly under Windows due
-to lack of PTY support. I have neither plans nor means to support OSX, but I
-will accept pull requests that add OSX support.
-
-The features that don't work under windows are:
-
- * RDebug.
- * Displaying output from the debugged program.
 
 REQUIREMENTS
 ============
 
-Vebugger requires the vimproc plugin, obtainable from:
-https://github.com/Shougo/vimproc.vim.  Notice that vimproc needs to be built -
-there are instructions in the GitHub page.
+Merginal is based on Fugitive, so it requires Fugitive. If you don't have it
+already you can get it from https://github.com/tpope/vim-fugitive
 
-In order for Vebugger to use a debugger, that debugger must be installed and
-it's executable must be either be in the PATH or set with a global variable
-(see `help vebugger-configuration`). In case of RDebug and PDB, which are used
-from the Ruby and Python modules, the interpreter(`ruby` or `python`) is the
-one that must be installed and in the path.
+It should go without saying that you need Git.
+
+Under Windows, vimproc is an optional requirement. Merginal will work without
+it, but it'll pop an ugly console window every time it needs to run a Git
+command. You can get vimproc from https://github.com/Shougo/vimproc.vim
+
 
 USAGE
 =====
 
-Run `help vebugger-launching` from Vim to learn how to launch the debugger.
+To use Merginal you need to know but one command: `:Merginal`. It'll open the
+branch list buffer, unless the repository is in merge mode then
+it'll open the merge conflicts buffer.
 
-Run `help vebugger-usage` from Vim to learn how to operate the debugger.
+Like Fugitive's commands, `:Merginal` is native to the buffer, and will only
+work in buffers that are parts of Git repositories.
+
+
+THE BRANCH LIST
+===============
+
+The branch list shows a list of branches. While in that list, you can use the
+following keymaps to interact with the branches:
+
+* `R`      Refresh the buffer list.
+* `C`/`cc` Checkout the branch under the cursor.
+* `A`/`aa` Create a new branch from the currently checked out branch. You'll be
+           prompted to enter a name for the new branch.
+* `D`/`dd` Delete the branch under the cursor.
+* `M`/`mm` Merge the branch under the cursor into the currently checked out
+           branch. If there are merge conflicts, the merge conflicts
+           buffer will open in place of the branch list buffer.
+* `mf`     Merge the branch under the cursor into the currently checked out branch
+           using Fugitive's `:Gmerge` command.
+* `ps`     Prompt to choose a remote to push the branch under the cursor.
+* `pl`     Prompt to choose a remote to pull the branch under the cursor.
+* `pf`     Prompt to choose a remote to fetch the branch under the cursor.
+* `gd`     Diff against the branch under the cursor.
+
+Run `:help merginal-branch-list` for more info.
+
+
+MERGE CONFLICTS
+===============
+
+The merge conflicts buffer is used to solve merge conflicts. It shows all the
+files that have merge conflicts and offers the following keymaps:
+
+* `R`      Refresh the merge conflicts list.
+* `<Cr>`   Open the conflicted file under the cursor.
+* `A`/`aa` Add the conflicted file under the cursor to the staging area. If that
+           was the last conflicted file, the merge conflicts buffer will close and
+           Fugitive's status window will open.
+
+DIFF FILES
+==========
+The diff files buffer is used to diff against another branch. It displays all
+the differences between the currently checked out branch and the branch it was
+opened against, and offerts the following keymaps:
+
+* `R`      Refresh the diff files list.
+* `<Cr>`   Open the file under the cursor(if it exists in the currently checked
+           out branch).
+* `ds`     Split-diff against the file under the cursor(if it exists in the other
+           branch)
+* `ds`     VSplit-diff against the file under the cursor(if it exists in the other
+           branch)
+* `co`     Check out the file under the cursor(if it exists in the other branch)
+           into the current branch.

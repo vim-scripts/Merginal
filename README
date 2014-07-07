@@ -10,3 +10,5 @@ Merginal aims provide a nice inteface for dealing with Git branches. It offers i
 * Deleting branches
 * Merging branches
 * Solving merge conflicts
+* Interacting with remotes(pulling, pushing, fetching, tracking)
+* Diffing against other branches
