@@ -149,6 +149,27 @@ function! merginal#runGitCommandInTreeReturnResultLines(repo,command)
     endtry
 endfunction
 
+"Returns 1 if there was a merginal bufffer to close
+function! merginal#closeMerginalBuffer()
+    let l:merginalWindowNumber=bufwinnr('Merginal:')
+    if 0<=l:merginalWindowNumber
+        let l:currentWindow=winnr()
+        try
+            execute l:merginalWindowNumber.'wincmd w'
+            wincmd q
+            "If the current window is after the merginal window, closing the
+            "merginal window will decrease the current window's nubmer.
+            if l:merginalWindowNumber<l:currentWindow
+                let l:currentWindow=l:currentWindow-1
+            endif
+            return 1
+        finally
+            execute l:currentWindow.'wincmd w'
+        endtry
+    end
+    return 0
+endfunction
+
 "Returns 1 if a new buffer was opened, 0 if it already existed
 function! merginal#openTuiBuffer(bufferName,inWindow)
     let l:repo=fugitive#repo()
@@ -177,6 +198,7 @@ function! merginal#openTuiBuffer(bufferName,inWindow)
 
     "At any rate, reassign the active repository
     let b:merginal_repo=l:repo
+    let b:headerLinesCount=0
 
     "Check and return if a new buffer was created
     return -1==l:tuiBufferWindow
@@ -206,7 +228,10 @@ endfunction
 function! merginal#branchDetails(lineNumber)
     if !exists('b:merginal_repo')
         throw 'Unable to get branch details outside the merginal window'
-    end
+    endif
+    if line(a:lineNumber)<=b:headerLinesCount
+        throw 'Unable to get branch details for the header of the merginal window'
+    endif
     let l:line=getline(a:lineNumber)
     let l:result={}
 
@@ -258,6 +283,51 @@ function! merginal#branchDetails(lineNumber)
     return l:result
 endfunction
 
+"For the file in the specified line, retrieve:
+" - name: the name of the file
+function! merginal#fileDetails(lineNumber)
+    if !exists('b:merginal_repo')
+        throw 'Unable to get file details outside the merginal window'
+    endif
+    if line(a:lineNumber)<=b:headerLinesCount
+        throw 'Unable to get branch details for the header of the merginal window'
+    endif
+    let l:line=getline(a:lineNumber)
+    let l:result={}
+
+    let l:result.name=l:line
+
+    return l:result
+endfunction
+
+function! merginal#getLocalBranchNamesThatTrackARemoteBranch(remoteBranchName)
+    "Get verbose list of branches
+    let l:branchList=split(merginal#system(b:merginal_repo.git_command('branch','-vv')),'\r\n\|\n\|\r')
+
+    "Filter for branches that track our remote
+    let l:checkIfTrackingRegex='\V['.escape(a:remoteBranchName,'\').'\[\]:]'
+    let l:branchList=filter(l:branchList,'v:val=~l:checkIfTrackingRegex')
+
+    "Extract the branch name from the matching lines
+    "let l:extractBranchNameRegex='\v^\*?\s*(\S+)'
+    "let l:branchList=map(l:branchList,'matchlist(v:val,l:extractBranchNameRegex)[1]')
+    let l:extractBranchNameRegex='\v^\*?\s*\zs\S+'
+    let l:branchList=map(l:branchList,'matchstr(v:val,l:extractBranchNameRegex)')
+
+    return l:branchList
+endfunction
+
+function! merginal#getRemoteBranchTrackedByLocalBranch(localBranchName)
+    let l:result=merginal#system(b:merginal_repo.git_command('branch','--list',a:localBranchName,'-vv'))
+    echo l:result
+    return matchstr(l:result,'\v\[\zs[^\[\]:]*\ze[\]:]')
+endfunction
+
+
+"Check if the current buffer's repo is in rebase mode
+function! merginal#isRebaseMode()
+    return isdirectory(fugitive#repo().dir('rebase-apply'))
+endfunction
 
 "Check if the current buffer's repo is in merge mode
 function! merginal#isMergeMode()
@@ -288,6 +358,7 @@ augroup merginal
     autocmd User Merginal_BranchList nnoremap <buffer> M :call <SID>mergeBranchUnderCursor()<Cr>
     autocmd User Merginal_BranchList nnoremap <buffer> mm :call <SID>mergeBranchUnderCursor()<Cr>
     autocmd User Merginal_BranchList nnoremap <buffer> mf :call <SID>mergeBranchUnderCursorUsingFugitive()<Cr>
+    autocmd User Merginal_BranchList nnoremap <buffer> rb :call <SID>rebaseBranchUnderCursor()<Cr>
     autocmd User Merginal_BranchList nnoremap <buffer> ps :call <SID>remoteActionForBranchUnderCursor('push')<Cr>
     autocmd User Merginal_BranchList nnoremap <buffer> pl :call <SID>remoteActionForBranchUnderCursor('pull')<Cr>
     autocmd User Merginal_BranchList nnoremap <buffer> pf :call <SID>remoteActionForBranchUnderCursor('fetch')<Cr>
@@ -407,9 +478,15 @@ function! s:mergeBranchUnderCursor()
         let l:branch=merginal#branchDetails('.')
         echo ' '
         echo merginal#runGitCommandInTreeReturnResult(b:merginal_repo,'merge --no-commit '.shellescape(l:branch.handle))
+        call merginal#reloadBuffers()
         if v:shell_error
-            call merginal#reloadBuffers()
             call merginal#openMergeConflictsBuffer(winnr())
+        elseif merginal#isMergeMode()
+            "If we are in merge mode without a shell error, that means there
+            "are not conflicts and the user can be prompted to enter a merge
+            "message.
+            Gstatus
+            call merginal#closeMerginalBuffer()
         endif
     endif
 endfunction
@@ -424,45 +501,117 @@ function! s:mergeBranchUnderCursorUsingFugitive()
     endif
 endfunction
 
-"Exactly what it says on tin
+"If there are rebase conflicts, opens the rebase conflicts buffer
+function! s:rebaseBranchUnderCursor()
+    if 'Merginal:Branches'==bufname('')
+        let l:branch=merginal#branchDetails('.')
+        echo ' '
+        echo merginal#runGitCommandInTreeReturnResult(b:merginal_repo,'rebase '.shellescape(l:branch.handle))
+        call merginal#reloadBuffers()
+        if v:shell_error
+            call merginal#openRebaseConflictsBuffer(winnr())
+        endif
+    endif
+endfunction
+
+"Run various remote actions
 function! s:remoteActionForBranchUnderCursor(remoteAction)
     if 'Merginal:Branches'==bufname('')
         let l:branch=merginal#branchDetails('.')
-        if !l:branch.isLocal
-            throw 'Can not '.a:remoteAction.' - branch is not local'
-        endif
-        let l:remotes=merginal#runGitCommandInTreeReturnResultLines(b:merginal_repo,'remote')
-        if empty(l:remotes)
-            throw 'Can not '.a:remoteAction.' - no remotes defined'
-        endif
+        if l:branch.isLocal
+            let l:remotes=merginal#runGitCommandInTreeReturnResultLines(b:merginal_repo,'remote')
+            if empty(l:remotes)
+                throw 'Can not '.a:remoteAction.' - no remotes defined'
+            endif
 
-        let l:chosenRemoteIndex=0
-        if 1<len(l:remotes)
-            let l:listForInputlist=map(copy(l:remotes),'v:key+1.") ".v:val')
-            "Choose the correct text accoring to the action:
+            let l:chosenRemoteIndex=0
+            if 1<len(l:remotes)
+                let l:listForInputlist=map(copy(l:remotes),'v:key+1.") ".v:val')
+                "Choose the correct text accoring to the action:
+                if 'push'==a:remoteAction
+                    call insert(l:listForInputlist,'Choose remote to '.a:remoteAction.' `'.l:branch.handle.'` to:')
+                else
+                    call insert(l:listForInputlist,'Choose remote to '.a:remoteAction.' `'.l:branch.handle.'` from:')
+                endif
+                let l:chosenRemoteIndex=inputlist(l:listForInputlist)
+
+                "Check that the chosen index is in range
+                if l:chosenRemoteIndex<=0 || len(l:remotes)<l:chosenRemoteIndex
+                    return
+                endif
+
+                let l:chosenRemoteIndex=l:chosenRemoteIndex-1
+            endif
+
+            let l:localBranchName=l:branch.name
+            let l:chosenRemote=l:remotes[l:chosenRemoteIndex]
+
+            let l:remoteBranchNameCanadidate=merginal#getRemoteBranchTrackedByLocalBranch(l:branch.name)
+            echo ' '
+            if !empty(l:remoteBranchNameCanadidate)
+                "Check that this is the same remote:
+                if l:remoteBranchNameCanadidate=~'\V\^'.escape(l:chosenRemote,'\').'/'
+                    "Remote the remote repository name
+                    let l:remoteBranchName=l:remoteBranchNameCanadidate[len(l:chosenRemote)+1:(-1)]
+                endif
+            endif
+        elseif l:branch.isRemote
+            let l:chosenRemote=l:branch.remote
             if 'push'==a:remoteAction
-                call insert(l:listForInputlist,'Choose remote to '.a:remoteAction.' `'.l:branch.handle.'` to:')
+                "For push, we want to specify the remote branch name
+                let l:remoteBranchName=l:branch.name
+
+                let l:locals=merginal#getLocalBranchNamesThatTrackARemoteBranch(l:branch.handle)
+                if empty(l:locals)
+                    let l:localBranchName=l:branch.name
+                elseif 1==len(l:locals)
+                    let l:localBranchName=l:locals[0]
+                else
+                    let l:listForInputlist=map(copy(l:locals),'v:key+1.") ".v:val')
+                    call insert(l:listForInputlist,'Choose local branch to push `'.l:branch.handle.'` from:')
+                    let l:chosenLocalIndex=inputlist(l:listForInputlist)
+
+                    "Check that the chosen index is in range
+                    if l:chosenLocalIndex<=0 || len(l:locals)<l:chosenLocalIndex
+                        return
+                    endif
+
+                    let l:localBranchName=l:locals[l:chosenLocalIndex-1]
+                endif
             else
-                call insert(l:listForInputlist,'Choose remote to '.a:remoteAction.' `'.l:branch.handle.'` from:')
+                "For pull and fetch, git automatically resolves the tracking
+                "branch based on the remote branch.
+                let l:localBranchName=l:branch.name
             endif
-            let l:chosenRemoteIndex=inputlist(l:listForInputlist)
-
-            "Check that the chosen index is in range
-            if l:chosenRemoteIndex<=0 || len(l:remotes)<l:chosenRemoteIndex
-                return
-            endif
-
-            let l:chosenRemoteIndex=l:chosenRemoteIndex-1
         endif
 
-        let l:chosenRemote=l:remotes[l:chosenRemoteIndex]
+        if exists('l:remoteBranchName') && empty(l:remoteBranchName)
+            unlet l:remoteBranchName
+        endif
 
         "Pulling requires the --no-commit flag
         if 'pull'==a:remoteAction
-            execute '!'.b:merginal_repo.git_command(a:remoteAction,'--no-commit').' '.shellescape(l:chosenRemote).' '.shellescape(l:branch.handle)
+            if exists('l:remoteBranchName')
+                let l:remoteBranchNameAsPrefix=shellescape(l:remoteBranchName).':'
+            else
+                let l:remoteBranchNameAsPrefix=''
+            endif
+            execute '!'.b:merginal_repo.git_command(a:remoteAction,'--no-commit').' '.shellescape(l:chosenRemote).' '.l:remoteBranchNameAsPrefix.shellescape(l:localBranchName)
             call merginal#reloadBuffers()
-        else
-            execute '!'.b:merginal_repo.git_command(a:remoteAction).' '.shellescape(l:chosenRemote).' '.shellescape(l:branch.handle)
+        elseif 'push'==a:remoteAction
+            if exists('l:remoteBranchName')
+                let l:remoteBranchNameAsSuffix=':'.shellescape(l:remoteBranchName)
+            else
+                let l:remoteBranchNameAsSuffix=''
+            endif
+            execute '!'.b:merginal_repo.git_command(a:remoteAction).' '.shellescape(l:chosenRemote).' '.shellescape(l:localBranchName).l:remoteBranchNameAsSuffix
+        elseif 'fetch'==a:remoteAction
+            if exists('l:remoteBranchName')
+                let l:targetBranchName=l:remoteBranchName
+            else
+                let l:targetBranchName=l:localBranchName
+            endif
+            execute '!'.b:merginal_repo.git_command(a:remoteAction).' '.shellescape(l:chosenRemote).' '.shellescape(l:targetBranchName)
         endif
         call merginal#tryRefreshBranchListBuffer(0)
     endif
@@ -501,46 +650,56 @@ augroup merginal
 augroup END
 
 "Returns 1 if all merges are done
+function! s:refreshConflictsBuffer(fileToJumpTo,headerLines)
+    "Get the list of unmerged files:
+    let l:conflicts=split(merginal#system(b:merginal_repo.git_command('ls-files','--unmerged')),'\r\n\|\n\|\r')
+    "Split by tab - the first part is info, the second is the file name
+    let l:conflicts=map(l:conflicts,'split(v:val,"\t")')
+    "Only take the stage 1 files - stage 2 and 3 are the same files with
+    "different hash, and we don't care about the hash here
+    let l:conflicts=filter(l:conflicts,'v:val[0] =~ "\\v 1$"')
+    "Take the file name - we no longer care about the info
+    let l:conflicts=map(l:conflicts,'v:val[1]')
+    "If the working copy is not the current dir, we can get wrong paths.
+    "We need to resulve that:
+    let l:conflicts=map(l:conflicts,'b:merginal_repo.tree(v:val)')
+    "Make the paths as short as possible:
+    let l:conflicts=map(l:conflicts,'fnamemodify(v:val,":~:.")')
+
+
+    let l:currentLine=line('.')-b:headerLinesCount
+
+    setlocal modifiable
+    "Clear the buffer:
+    normal ggdG
+    "Write the branch list:
+    call setline(1,a:headerLines+l:conflicts)
+    let b:headerLinesCount=len(a:headerLines)
+    let l:currentLine=l:currentLine+b:headerLinesCount
+    setlocal nomodifiable
+    if empty(l:conflicts)
+        return 1
+    endif
+
+    if empty(a:fileToJumpTo)
+        if 0<l:currentLine
+            execute l:currentLine
+        endif
+    else
+        let l:lineNumber=search('\V\^'+escape(a:fileToJumpTo,'\')+'\$','cnw')
+        if 0<l:lineNumber
+            execute l:lineNumber
+        else
+            execute l:currentLine
+        endif
+    endif
+    return 0
+endfunction
+
+"Returns 1 if all merges are done
 function! merginal#tryRefreshMergeConflictsBuffer(fileToJumpTo)
     if 'Merginal:Conflicts'==bufname('')
-        "Get the list of unmerged files:
-        let l:mergeConflicts=split(merginal#system(b:merginal_repo.git_command('ls-files','--unmerged')),'\r\n\|\n\|\r')
-        "Split by tab - the first part is info, the second is the file name
-        let l:mergeConflicts=map(l:mergeConflicts,'split(v:val,"\t")')
-        "Only take the stage 1 files - stage 2 and 3 are the same files with
-        "different hash, and we don't care about the hash here
-        let l:mergeConflicts=filter(l:mergeConflicts,'v:val[0] =~ "\\v 1$"')
-        "Take the file name - we no longer care about the info
-        let l:mergeConflicts=map(l:mergeConflicts,'v:val[1]')
-        "If the working copy is not the current dir, we can get wrong paths.
-        "We need to resulve that:
-        let l:mergeConflicts=map(l:mergeConflicts,'b:merginal_repo.tree(v:val)')
-        "Make the paths as short as possible:
-        let l:mergeConflicts=map(l:mergeConflicts,'fnamemodify(v:val,":~:.")')
-
-
-        let l:currentLine=line('.')
-
-        setlocal modifiable
-        "Clear the buffer:
-        normal ggdG
-        "Write the branch list:
-        call setline(1,l:mergeConflicts)
-        setlocal nomodifiable
-        if empty(l:mergeConflicts)
-            return 1
-        endif
-
-        if empty(a:fileToJumpTo)
-            execute l:currentLine
-        else
-            let l:lineNumber=search('\V\^'+escape(a:fileToJumpTo,'\')+'\$','cnw')
-            if 0<l:lineNumber
-                execute l:lineNumber
-            else
-                execute l:currentLine
-            endif
-        endif
+        return s:refreshConflictsBuffer(a:fileToJumpTo,[])
     endif
     return 0
 endfunction
@@ -548,11 +707,12 @@ endfunction
 "Exactly what it says on tin
 function! s:openMergeConflictUnderCursor()
     if 'Merginal:Conflicts'==bufname('')
-        let l:fileName=getline('.')
-        if empty(l:fileName)
+                \|| 'Merginal:Rebase'==bufname('')
+        let l:file=merginal#fileDetails('.')
+        if empty(l:file.name)
             return
         endif
-        call merginal#openFileDecidedWindow(b:merginal_repo,l:fileName)
+        call merginal#openFileDecidedWindow(b:merginal_repo,l:file.name)
     endif
 endfunction
 
@@ -560,21 +720,33 @@ endfunction
 "buffer
 function! s:addConflictedFileToStagingArea()
     if 'Merginal:Conflicts'==bufname('')
-        let l:fileName=getline('.')
-        if empty(l:fileName)
+                \|| 'Merginal:Rebase'==bufname('')
+        let l:file=merginal#fileDetails('.')
+        if empty(l:file.name)
             return
         endif
-        echo merginal#runGitCommandInTreeReturnResult(b:merginal_repo,'--no-pager add '.shellescape(fnamemodify(l:fileName,':p')))
+        echo merginal#runGitCommandInTreeReturnResult(b:merginal_repo,'--no-pager add '.shellescape(fnamemodify(l:file.name,':p')))
 
-        if merginal#tryRefreshMergeConflictsBuffer(0)
-            "If this returns 1, that means this is the last branch, and we
-            "should open gufitive's status window
-            let l:mergeConflictsBuffer=bufnr('')
-            Gstatus
-            let l:gitStatusBuffer=bufnr('')
-            execute bufwinnr(l:mergeConflictsBuffer).'wincmd w'
-            wincmd q
-            execute bufwinnr(l:gitStatusBuffer).'wincmd w'
+        if 'Merginal:Conflicts'==bufname('')
+            if merginal#tryRefreshMergeConflictsBuffer(0)
+                "If this returns 1, that means this is the last branch, and we
+                "should open gufitive's status window
+                let l:mergeConflictsBuffer=bufnr('')
+                Gstatus
+                let l:gitStatusBuffer=bufnr('')
+                execute bufwinnr(l:mergeConflictsBuffer).'wincmd w'
+                wincmd q
+                execute bufwinnr(l:gitStatusBuffer).'wincmd w'
+            endif
+        else
+            if merginal#tryRefreshRebaseConflictsBuffer(0)
+                echo 'Added the last file of this patch.'
+                echo 'Continue to the next patch(y/n)?'
+                let l:answer=getchar()
+                if char2nr('y')==l:answer || char2nr('Y')==l:answer
+                    call s:rebaseAction('continue')
+                endif
+            endif
         endif
     endif
 endfunction
@@ -724,6 +896,54 @@ function! s:checkoutDiffFileUnderCursor()
         else
             echo ' '
             echo 'File checkout canceled by the user'
+        endif
+    endif
+endfunction
+
+
+"Open the rebase conflicts buffer for resolving rebase conflicts
+function! merginal#openRebaseConflictsBuffer(...)
+    let l:currentFile=expand('%:~:.')
+    if merginal#openTuiBuffer('Merginal:Rebase',get(a:000,1,bufwinnr('Merginal:')))
+        doautocmd User Merginal_RebaseConflicts
+    endif
+
+    "At any rate, refresh the buffer:
+    call merginal#tryRefreshRebaseConflictsBuffer(l:currentFile)
+endfunction
+
+augroup merginal
+    autocmd User Merginal_RebaseConflicts nnoremap <buffer> R :call merginal#tryRefreshRebaseConflictsBuffer(0)<Cr>
+    autocmd User Merginal_RebaseConflicts nnoremap <buffer> <Cr> :call <SID>openMergeConflictUnderCursor()<Cr>
+    autocmd User Merginal_RebaseConflicts nnoremap <buffer> A :call <SID>addConflictedFileToStagingArea()<Cr>
+    autocmd User Merginal_RebaseConflicts nnoremap <buffer> aa :call <SID>addConflictedFileToStagingArea()<Cr>
+    autocmd User Merginal_RebaseConflicts nnoremap <buffer> ra :call <SID>rebaseAction('abort')<Cr>
+    autocmd User Merginal_RebaseConflicts nnoremap <buffer> rs :call <SID>rebaseAction('skip')<Cr>
+    autocmd User Merginal_RebaseConflicts nnoremap <buffer> rc :call <SID>rebaseAction('continue')<Cr>
+augroup END
+
+"Returns 1 if all rebase conflicts are done
+function! merginal#tryRefreshRebaseConflictsBuffer(fileToJumpTo)
+    if 'Merginal:Rebase'==bufname('')
+        let l:currentCommitMessageLines=readfile(b:merginal_repo.dir('rebase-apply','msg-clean'))
+        call insert(l:currentCommitMessageLines,'=== Reapplying: ===')
+        call add(l:currentCommitMessageLines,'===================')
+        call add(l:currentCommitMessageLines,'')
+        return s:refreshConflictsBuffer(a:fileToJumpTo,l:currentCommitMessageLines)
+    endif
+    return 0
+endfunction
+
+"Run various rebase actions
+function! s:rebaseAction(remoteAction)
+    if 'Merginal:Rebase'==bufname('')
+        echo merginal#runGitCommandInTreeReturnResult(b:merginal_repo,'--no-pager rebase --'.a:remoteAction)
+        call merginal#reloadBuffers()
+        if merginal#isRebaseMode()
+            call merginal#tryRefreshRebaseConflictsBuffer(0)
+        else
+            "If we finished rebasing - close the rebase conflicts buffer
+            wincmd q
         endif
     endif
 endfunction
