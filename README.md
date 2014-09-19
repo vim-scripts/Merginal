@@ -13,6 +13,7 @@ offers interactive TUI for:
  * Solving merge conflicts
  * Interacting with remotes(pulling, pushing, fetching, tracking)
  * Diffing against other branches
+ * Renaming branches
 
 
 REQUIREMENTS
@@ -62,9 +63,11 @@ following keymaps to interact with the branches:
            cursor. If there are rebase conflicts, the rebase conflicts buffer will open in place of
            the branch list buffer.
 * `ps`     Prompt to choose a remote to push the branch under the cursor.
+* `pS`     Prompt to choose a remote to force push the branch under the cursor.
 * `pl`     Prompt to choose a remote to pull the branch under the cursor.
 * `pf`     Prompt to choose a remote to fetch the branch under the cursor.
 * `gd`     Diff against the branch under the cursor.
+* `rn`     Prompt to rename the branch under the cursor.
 
 Run `:help merginal-branch-list` for more info.
 
@@ -98,6 +101,22 @@ and offers the following keymaps:
 * `ra`     Abort the rebase
 * `rc`     Continue to the next patch.
 * `rs`     Skip the current patch
+
+
+REBASE AMEND
+================
+
+The rebase amend buffer is shown when you amend a patch during a rebase. It
+shows the amended commit's shortened hash and commit message. Additionally, it
+shows all the branches so you can diff against them while the patch. If offers
+the folloing keymaps:
+
+* `R`      Refresh the rebase amended buffer.
+* `gd`     Diff against the branch under the cursor.
+* `ra`     Abort the rebase
+* `rc`     Continue to the next patch.
+* `rs`     Skip the current patch
+
 
 DIFF FILES
 ==========
