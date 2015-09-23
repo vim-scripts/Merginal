@@ -402,6 +402,12 @@ function! merginal#isMergeMode()
     return !empty(glob(fugitive#repo().dir('MERGE_MODE')))
 endfunction
 
+"Check if the current buffer's repo is in cherry-pick mode
+function! merginal#isCherryPickMode()
+    "Use glob() to check for file existence
+    return !empty(glob(fugitive#repo().dir('CHERRY_PICK_HEAD')))
+endfunction
+
 "Open the branch list buffer for controlling buffers
 function! merginal#openBranchListBuffer(...)
     if merginal#openTuiBuffer('Merginal:Branches',get(a:000,1,bufwinnr('Merginal:')))
@@ -424,9 +430,10 @@ augroup merginal
     autocmd User Merginal_BranchList nnoremap <buffer> aa :call <SID>promptToCreateNewBranch()<Cr>
     autocmd User Merginal_BranchList nnoremap <buffer> D :call <SID>deleteBranchUnderCursor()<Cr>
     autocmd User Merginal_BranchList nnoremap <buffer> dd :call <SID>deleteBranchUnderCursor()<Cr>
-    autocmd User Merginal_BranchList nnoremap <buffer> M :call <SID>mergeBranchUnderCursor()<Cr>
-    autocmd User Merginal_BranchList nnoremap <buffer> mm :call <SID>mergeBranchUnderCursor()<Cr>
+    autocmd User Merginal_BranchList nnoremap <buffer> M :call <SID>mergeBranchUnderCursor([])<Cr>
+    autocmd User Merginal_BranchList nnoremap <buffer> mm :call <SID>mergeBranchUnderCursor([])<Cr>
     autocmd User Merginal_BranchList nnoremap <buffer> mf :call <SID>mergeBranchUnderCursorUsingFugitive()<Cr>
+    autocmd User Merginal_BranchList nnoremap <buffer> mn :call <SID>mergeBranchUnderCursor(['--no-ff'])<Cr>
     autocmd User Merginal_BranchList nnoremap <buffer> rb :call <SID>rebaseBranchUnderCursor()<Cr>
     autocmd User Merginal_BranchList nnoremap <buffer> ps :call <SID>remoteActionForBranchUnderCursor('push',[])<Cr>
     autocmd User Merginal_BranchList nnoremap <buffer> pS :call <SID>remoteActionForBranchUnderCursor('push',['--force'])<Cr>
@@ -475,7 +482,9 @@ function! s:checkoutBranchUnderCursor()
     if 'Merginal:Branches'==bufname('')
         let l:branch=merginal#branchDetails('.')
         call merginal#runGitCommandInTreeEcho(b:merginal_repo,'--no-pager checkout '.shellescape(l:branch.handle))
-        call merginal#reloadBuffers()
+        if !v:shell_error
+            call merginal#reloadBuffers()
+        endif
         call merginal#tryRefreshBranchListBuffer(0)
     endif
 endfunction
@@ -497,7 +506,9 @@ function! s:trackBranchUnderCursor(promptForName)
             endif
         endif
         call merginal#runGitCommandInTreeEcho(b:merginal_repo,'--no-pager checkout -b '.shellescape(l:newBranchName).' --track '.shellescape(l:branch.handle))
-        call merginal#reloadBuffers()
+        if !v:shell_error
+            call merginal#reloadBuffers()
+        endif
         call merginal#tryRefreshBranchListBuffer(0)
     endif
 endfunction
@@ -544,19 +555,29 @@ function! s:deleteBranchUnderCursor()
 endfunction
 
 "If there are merge conflicts, opens the merge conflicts buffer
-function! s:mergeBranchUnderCursor()
-    if 'Merginal:Branches'==bufname('')
-        let l:branch=merginal#branchDetails('.')
-        call merginal#runGitCommandInTreeEcho(b:merginal_repo,'merge --no-commit '.shellescape(l:branch.handle))
-        call merginal#reloadBuffers()
-        if v:shell_error
-            call merginal#openMergeConflictsBuffer(winnr())
-        elseif merginal#isMergeMode()
-            "If we are in merge mode without a shell error, that means there
-            "are not conflicts and the user can be prompted to enter a merge
-            "message.
-            Gstatus
-            call merginal#closeMerginalBuffer()
+function! s:mergeBranchUnderCursor(flags)
+    if 'Merginal:Branches' == bufname('')
+        let l:branch = merginal#branchDetails('.')
+        let l:gitCommand = 'merge --no-commit '.shellescape(l:branch.handle)
+        for l:flag in a:flags
+            let l:gitCommand .= ' '.shellescape(l:flag)
+        endfor
+        call merginal#runGitCommandInTreeEcho(b:merginal_repo, l:gitCommand)
+        if merginal#isMergeMode()
+            call merginal#reloadBuffers()
+            if v:shell_error
+                call merginal#openMergeConflictsBuffer(winnr())
+            else
+                "If we are in merge mode without a shell error, that means there
+                "are not conflicts and the user can be prompted to enter a merge
+                "message.
+                Gstatus
+                call merginal#closeMerginalBuffer()
+            endif
+        else
+            if !v:shell_error
+                call merginal#reloadBuffers()
+            end
         endif
     endif
 endfunction
@@ -576,9 +597,13 @@ function! s:rebaseBranchUnderCursor()
     if 'Merginal:Branches'==bufname('')
         let l:branch=merginal#branchDetails('.')
         call merginal#runGitCommandInTreeEcho(b:merginal_repo,'rebase '.shellescape(l:branch.handle))
-        call merginal#reloadBuffers()
         if v:shell_error
-            call merginal#openRebaseConflictsBuffer(winnr())
+            if merginal#isRebaseMode()
+                call merginal#reloadBuffers()
+                call merginal#openRebaseConflictsBuffer(winnr())
+            endif
+        else
+            call merginal#reloadBuffers()
         endif
     endif
 endfunction
@@ -826,6 +851,7 @@ endfunction
 function! s:openMergeConflictUnderCursor()
     if 'Merginal:Conflicts'==bufname('')
                 \|| 'Merginal:Rebase'==bufname('')
+                \|| 'Merginal:CherryPick'==bufname('')
         let l:file=merginal#fileDetails('.')
         if empty(l:file.name)
             return
@@ -839,15 +865,16 @@ endfunction
 function! s:addConflictedFileToStagingArea()
     if 'Merginal:Conflicts'==bufname('')
                 \|| 'Merginal:Rebase'==bufname('')
+                \|| 'Merginal:CherryPick'==bufname('')
         let l:file=merginal#fileDetails('.')
         if empty(l:file.name)
             return
         endif
         call merginal#runGitCommandInTreeEcho(b:merginal_repo,'--no-pager add '.shellescape(fnamemodify(l:file.name,':p')))
 
-        if 'Merginal:Conflicts'==bufname('')
+        if 'Merginal:Conflicts' == bufname('')
             if merginal#tryRefreshMergeConflictsBuffer(0)
-                "If this returns 1, that means this is the last branch, and we
+                "If this returns 1, that means this is the last file, and we
                 "should open gufitive's status window
                 let l:mergeConflictsBuffer=bufnr('')
                 Gstatus
@@ -856,7 +883,7 @@ function! s:addConflictedFileToStagingArea()
                 wincmd q
                 execute bufwinnr(l:gitStatusBuffer).'wincmd w'
             endif
-        else
+        elseif 'Merginal:Rebase' == bufname('')
             if merginal#tryRefreshRebaseConflictsBuffer(0)
                 echo 'Added the last file of this patch.'
                 echo 'Continue to the next patch (y/N)?'
@@ -864,6 +891,17 @@ function! s:addConflictedFileToStagingArea()
                 if char2nr('y')==l:answer || char2nr('Y')==l:answer
                     call s:rebaseAction('continue')
                 endif
+            endif
+        elseif 'Merginal:CherryPick' == bufname('')
+            if merginal#tryRefreshCherryPickConflictsBuffer(0)
+                "If this returns 1, that means this is the last file, and we
+                "should open gufitive's status window
+                let l:cherryPickConflictsBuffer=bufnr('')
+                Gstatus
+                let l:gitStatusBuffer=bufnr('')
+                execute bufwinnr(l:cherryPickConflictsBuffer).'wincmd w'
+                wincmd q
+                execute bufwinnr(l:gitStatusBuffer).'wincmd w'
             endif
         endif
     endif
@@ -1153,6 +1191,7 @@ augroup merginal
     autocmd User Merginal_HistoryLog nnoremap <buffer> C :call <SID>checkoutCommitUnderCurosr()<Cr>
     autocmd User Merginal_HistoryLog nnoremap <buffer> cc :call <SID>checkoutCommitUnderCurosr()<Cr>
     autocmd User Merginal_HistoryLog nnoremap <buffer> gd :call <SID>diffWithCommitUnderCursor()<Cr>
+    autocmd User Merginal_HistoryLog nnoremap <buffer> cp :call <SID>cherryPickCommitUnderCursor()<Cr>
 augroup END
 
 function! merginal#tryRefreshHistoryLogBuffer()
@@ -1209,6 +1248,23 @@ function! s:diffWithCommitUnderCursor()
     endif
 endfunction
 
+"Exactly what it says on tin
+function! s:cherryPickCommitUnderCursor()
+    if 'Merginal:HistoryLog' == bufname('')
+        let l:commitHash = merginal#commitHash('.')
+        let l:gitCommand = 'cherry-pick '.shellescape(l:commitHash)
+        call merginal#runGitCommandInTreeEcho(b:merginal_repo, l:gitCommand)
+        if v:shell_error
+            if merginal#isCherryPickMode()
+                call merginal#reloadBuffers()
+                call merginal#openCherryPickConflictsBuffer(winnr())
+            endif
+        else
+            call merginal#reloadBuffers()
+        endif
+    endif
+endfunction
+
 function! s:moveToNextOrPreviousCommit(direction)
     if 'Merginal:HistoryLog'==bufname('')
         let l:line = line('.')
@@ -1235,3 +1291,58 @@ function! s:moveToNextOrPreviousCommit(direction)
     endif
 endfunction
 
+
+
+
+
+"Open the cherry-pick conflicts buffer for resolving cherry-pick conflicts
+function! merginal#openCherryPickConflictsBuffer(...)
+    let l:currentFile = expand('%:~:.')
+
+    if merginal#openTuiBuffer('Merginal:CherryPick',get(a:000,1,bufwinnr('Merginal:')))
+        doautocmd User Merginal_CherryPickConflicts
+    endif
+
+    "At any rate, refresh the buffer:
+    call merginal#tryRefreshCherryPickConflictsBuffer(l:currentFile)
+endfunction
+
+augroup merginal
+    autocmd User Merginal_CherryPickConflicts nnoremap <buffer> q <C-w>q
+    autocmd User Merginal_CherryPickConflicts nnoremap <buffer> R :call merginal#tryRefreshCherryPickConflictsBuffer(0)<Cr>
+    autocmd User Merginal_CherryPickConflicts nnoremap <buffer> <Cr> :call <SID>openMergeConflictUnderCursor()<Cr>
+    autocmd User Merginal_CherryPickConflicts nnoremap <buffer> A :call <SID>addConflictedFileToStagingArea()<Cr>
+    autocmd User Merginal_CherryPickConflicts nnoremap <buffer> aa :call <SID>addConflictedFileToStagingArea()<Cr>
+    autocmd User Merginal_CherryPickConflicts nnoremap <buffer> ca :call <SID>cherryPickAction('abort')<Cr>
+    autocmd User Merginal_CherryPickConflicts nnoremap <buffer> cc :call <SID>cherryPickAction('continue')<Cr>
+augroup END
+
+"Returns 1 if all cherry-pick conflicts are done
+function! merginal#tryRefreshCherryPickConflictsBuffer(fileToJumpTo)
+    if 'Merginal:CherryPick'==bufname('')
+        let l:cherryPickHead = readfile(b:merginal_repo.dir('CHERRY_PICK_HEAD'))[0]
+        let l:cherryPickCommitMessageLines = merginal#runGitCommandInTreeReturnResultLines(b:merginal_repo, 'show --no-patch --format=%B '.l:cherryPickHead)
+        if empty(l:cherryPickCommitMessageLines[-1])
+            call remove(l:cherryPickCommitMessageLines, -1)
+        endif
+        call insert(l:cherryPickCommitMessageLines, '=== Cherry Picking: ===')
+        call add(l:cherryPickCommitMessageLines,    '=======================')
+        call add(l:cherryPickCommitMessageLines, '')
+        return s:refreshConflictsBuffer(a:fileToJumpTo, l:cherryPickCommitMessageLines)
+    endif
+    return 0
+endfunction
+
+"Run various cherry-pick actions
+function! s:cherryPickAction(remoteAction)
+    if 'Merginal:CherryPick'==bufname('')
+        call merginal#runGitCommandInTreeEcho(b:merginal_repo,'--no-pager cherry-pick --'.a:remoteAction)
+        call merginal#reloadBuffers()
+        if merginal#isCherryPickMode()
+            call merginal#tryRefreshCherryPickConflictsBuffer(0)
+        else
+            "If we finished cherry-picking - close the cherry-pick conflicts buffer
+            wincmd q
+        endif
+    endif
+endfunction
